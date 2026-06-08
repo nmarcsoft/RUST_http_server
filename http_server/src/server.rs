@@ -157,9 +157,7 @@ fn handle_client(mut stream : TcpStream){
         }
     }
     println!("{:#?}", http_request);
-
     let http_response : Option<HttpResponse> = HttpResponse::new(http_request.http_request_type.unwrap(), ResponseType::ApplicationJson, None);
-
     if http_response.is_some() {
         let result = http_response.unwrap().send_response(&mut stream);
     }
@@ -167,7 +165,6 @@ fn handle_client(mut stream : TcpStream){
 
 pub fn init_tcp_listener() -> std::io::Result<()>{
     let listener = TcpListener::bind("127.0.0.1:8080")?;
-
     for stream in listener.incoming() {
         handle_client(stream?);
     }
