@@ -1,4 +1,7 @@
-use std::{io::Read, net::{TcpListener, TcpStream}, io::Write};
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+};
 
 #[derive(Debug, PartialEq)]
 enum RequestType {
@@ -14,71 +17,86 @@ enum RequestType {
 }
 
 #[derive(Debug)]
-enum ResponseType {
-    ApplicationJson,
+struct HttpRequest {
+    method: Option<RequestType>,
+    target: String,
+    host: String,
+    user_agent: String,
+}
+
+impl HttpRequest {
+    fn parse(lines : Vec<&str>) -> Self {
+
+        let request_type : Option<RequestType>;
+        let request_target : String;
+        let mut host : String = String::new();
+        let mut user_agent : String = String::new();
+
+        request_type = parse_request_line(lines[0]);
+        request_target = String::from(lines[0].split(" ").nth(1).unwrap());
+        for line in lines {
+            if let Some((key, value)) = line.split_once(": ") {
+                match key {
+                    "Host" => host = value.to_string(),
+                    "User-Agent" => user_agent = value.to_string(),
+                    _ => {}
+                }
+            }
+        };
+
+        HttpRequest { method: request_type, target: request_target, host, user_agent }
+    }
 }
 
 #[derive(Debug)]
 struct HttpResponse {
-    request_type : RequestType,
-    reponse_request_type: ResponseType,
-    response_content_type: String,
-    response_content_length: u32,
-
-    response_body: String,
+    status_code: u16,
+    content_type: String,
+    body: String,
 }
 
 impl HttpResponse {
-    fn new(request_type : RequestType, response_type : ResponseType, body : Option<String>) -> Option<HttpResponse> {
-
-        if request_type == RequestType::Get {
-            let body_unwrapped : String = body.unwrap_or(String::from("{message: Hello World}"));
-
-            Some(HttpResponse {
-                request_type : RequestType::Get,
-                reponse_request_type : ResponseType::ApplicationJson,
-
-                response_content_type : String::from("application/json"),
-                response_content_length : body_unwrapped.len() as u32,
-
-                response_body : body_unwrapped,
-            })
-        } else {
-            None
+    fn ok(content_type: &str, body: String) -> Self {
+        HttpResponse {
+            status_code: 200,
+            content_type: content_type.to_string(),
+            body,
         }
     }
 
-    fn send_response(self, stream : &mut TcpStream) -> std::io::Result<()> {
+    fn not_found() -> Self {
+        HttpResponse {
+            status_code: 404,
+            content_type: String::from("application/json"),
+            body: String::from("{\"error\": \"Not Found\"}"),
+        }
+    }
 
-        let mut to_write : String = String::new();
-        let intro : &str = "HTTP/1.1 200 OK\r\n";
-        to_write.push_str(intro);
+    fn send(self, stream: &mut TcpStream) -> std::io::Result<()> {
+        let status_text = match self.status_code {
+            200 => "OK",
+            404 => "Not Found",
+            _ => "Internal Server Error",
+        };
 
-        let content_type_str : String = format!("Content-Type: {}\r\n", self.response_content_type);
-        to_write.push_str(content_type_str.as_str());
+        let response = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+            self.status_code,
+            status_text,
+            self.content_type,
+            self.body.len(),
+            self.body,
+        );
 
-        let content_length_str : String = format!("Content-Length: {}\r\n", self.response_content_length);
-        to_write.push_str(content_length_str.as_str());
-
-        to_write.push_str("\r\n");
-        to_write.push_str(self.response_body.as_str());
-
-        let result = stream.write_all(to_write.as_bytes());
-        result
+        stream.write_all(response.as_bytes())
     }
 }
 
-#[derive(Debug)]
-struct HttpReader {
-    http_request_type: Option<RequestType>,
-    http_host: String,
-    http_user_agent: String,
-}
 
-fn get_request_type(line: &str, http_request : &mut HttpReader) {
-    let first_word = line.split(" ").nth(0);
+fn parse_request_line(line: &str) -> Option<RequestType> {
+    let mut parts = line.split(' ');
 
-    http_request.http_request_type = match first_word {
+    match parts.next() {
         Some("GET") => Some(RequestType::Get),
         Some("POST") => Some(RequestType::Post),
         Some("DELETE") => Some(RequestType::Delete),
@@ -92,78 +110,49 @@ fn get_request_type(line: &str, http_request : &mut HttpReader) {
     }
 }
 
-fn get_host_ip(line : &str, http_request : &mut HttpReader) {
-
-    let parser : Vec<&str> = line.splitn(2, ": ").collect();
-
-    if parser.len() != 2 {
-        http_request.http_host = String::from("Error");
-    } else {
-        http_request.http_host = String::from(parser[1]);
+fn route(request: HttpRequest) -> HttpResponse {
+    match request.method {
+        Some(RequestType::Get) => handle_get(request.target),
+        _ => HttpResponse::not_found(),
     }
 }
 
-fn get_user_agent(line : &str, http_request : &mut HttpReader) {
-
-    let parser : Vec<&str> = line.splitn(2, ": ").collect();
-
-    if parser.len() != 2 {
-        http_request.http_user_agent = String::from("Error");
+fn handle_get(target: String) -> HttpResponse {
+    if target == "/" {
+        HttpResponse::ok("application/json", String::from("{\"message\": \"Hello World\"}"))
+    } else if let Some(book_name) = target.strip_prefix("/book/") {
+        if book_name.is_empty() {
+            return HttpResponse::not_found();
+        }
+        HttpResponse::ok(
+            "application/json",
+            format!("{{\"message\": \"On cherche le livre {book_name}\"}}"),
+        )
     } else {
-        http_request.http_user_agent = String::from(parser[1]);
+        HttpResponse::not_found()
     }
 }
 
-fn handle_client(mut stream : TcpStream){
-    println!("Recived Tcp request");
+fn handle_client(mut stream: TcpStream) {
+    println!("Received TCP request");
 
     let mut read_buffer = [0; 2048];
-    let result = stream.read(&mut read_buffer[..]);
-
-    let n =
-        match result {
-            Ok(n) => n,
-            Err(_) => return,
-        };
-
-    let usable_buffer = &read_buffer[0..n];
-    let result_conversion = str::from_utf8(usable_buffer);
-
-    let converted =
-        match result_conversion {
-            Ok(str) => str,
-            Err(v) => return,
-        };
-
-    let mut part = converted.split("\r\n");
-
-
-    let mut http_request : HttpReader = HttpReader {
-        http_request_type :  None,
-        http_host : String::new(),
-        http_user_agent :  String::new(),
+    let n = match stream.read(&mut read_buffer) {
+        Ok(n) => n,
+        Err(_) => return,
     };
 
-    // Parsing ligne à ligne pour créer la structure
-    if let Some(line) = part.nth(0) {
-        get_request_type(line, &mut http_request);
-    }
-
-    for line in part {
-        if line.starts_with("Host") {
-            get_host_ip(line, &mut http_request);
-        } else if line.starts_with("User-Agent") {
-            get_user_agent(line, &mut http_request);
-        }
-    }
-    println!("{:#?}", http_request);
-    let http_response : Option<HttpResponse> = HttpResponse::new(http_request.http_request_type.unwrap(), ResponseType::ApplicationJson, None);
-    if http_response.is_some() {
-        let result = http_response.unwrap().send_response(&mut stream);
-    }
+    let converted = match str::from_utf8(&read_buffer[..n]) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let lines : Vec<&str>= converted.split("\r\n").collect();
+    let request = HttpRequest::parse(lines);
+    println!("{:#?}", request);
+    let _ = route(request).send(&mut stream);
 }
 
-pub fn init_tcp_listener() -> std::io::Result<()>{
+pub fn init_tcp_listener() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080")?;
     for stream in listener.incoming() {
         handle_client(stream?);
