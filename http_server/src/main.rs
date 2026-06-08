@@ -1,12 +1,8 @@
-struct User {
-    active:bool,
-    age:u64,
-}
+mod server;
 
 fn main() {
-    let n:u64 = 5;
-    let user = User { active: false, age: n};
-
-    println!("User age = {}", user.age);
-    println!("Hello, world!");
+    match server::init_tcp_listener() {
+        Ok(_) => println!("Server stopped"),
+        Err(e) => println!("Error: {}", e),
+    }
 }
